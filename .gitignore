@@ -1,0 +1,17 @@
+# 可再生成/第三方大文件，不入库
+tools/
+chatlog/
+wx2base/
+WeChatDataAnalysis/
+chatlog.exe
+go.zip
+decrypted/
+__pycache__/
+*.pyc
+.git/
+
+# 私人数据（含群友聊天内容），只保留在本地，不入公开仓库
+data/
+keys/
+key_result.json
+*.html

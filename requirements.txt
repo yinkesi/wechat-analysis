@@ -1,0 +1,8 @@
+pycryptodome
+pefile
+pymem
+yara-python
+zstandard
+jieba
+matplotlib
+scikit-learn
