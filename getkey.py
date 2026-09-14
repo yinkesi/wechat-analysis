@@ -2,20 +2,30 @@
 流程: Weixin.dll 提取 internal_db_key (XOR key) -> 微信进程内存 YARA 扫描 raw key
       -> passphrase = raw ^ internal -> PBKDF2(256000) 派生每库 AES key -> 解密
 """
-import sys, os, json, time, hashlib, hmac as hmac_mod, struct
+import hmac as hmac_mod
+import json
+import logging
+import os
+import struct
+import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 
-sys.path.insert(0, r"D:\code\wechat-analysis\WeChatDataAnalysis")
-sys.path.insert(0, r"D:\code\wechat-analysis\WeChatDataAnalysis\src\wechat_decrypt_tool")
+import config
+from Crypto.Cipher import AES
+from Crypto.Hash import SHA512
+from Crypto.Protocol.KDF import PBKDF2
+
+# WeChatDataAnalysis（不入库）：scan.py 特征码扫 DLL，key_v4.py YARA 扫内存
+if config.WDA_DIR:
+    sys.path.insert(0, config.WDA_DIR)
+    sys.path.insert(0, os.path.join(config.WDA_DIR, "src", "wechat_decrypt_tool"))
 
 import key_v4
-from Crypto.Protocol.KDF import PBKDF2
-from Crypto.Hash import SHA512
 
-WDA = r"D:\code\wechat-analysis\WeChatDataAnalysis"
-DLL = r"C:\Program Files\Tencent\Weixin\4.1.13.65\Weixin.dll"
-DB_DIR = r"D:\xwechat_files\wxid_zs6m4ozpeqv512_7fc6\db_storage"
-OUT_DIR = r"D:\code\wechat-analysis\decrypted\v4"
+DLL = config.DLL_PATH
+DB_DIR = config.WX_DB_DIR
+OUT_DIR = config.OUT_DIR
 PROBE_DB = os.path.join(DB_DIR, "contact", "contact.db")
 
 PAGE_SZ, KEY_SZ, SALT_SZ, IV_SZ, HMAC_SZ = 4096, 32, 16, 16, 64
@@ -66,7 +76,6 @@ def get_wechat_pids():
 
 
 def find_passphrase(internal_cands):
-    probe = open(PROBE_DB, "rb").read(PAGE_SZ)
     for pid in get_wechat_pids():
         log(f"[mem] 尝试 PID={pid} ...")
         for internal in [None] + internal_cands:
@@ -120,23 +129,23 @@ def decrypt_db(args):
                 break
             iv = page[PAGE_SZ - RESERVE_SZ:PAGE_SZ - RESERVE_SZ + IV_SZ]
             if pgno == 1:
-                from Crypto.Cipher import AES
                 dec = AES.new(enc_key, AES.MODE_CBC, iv).decrypt(page[SALT_SZ:PAGE_SZ - RESERVE_SZ])
                 fout.write(SQLITE_HDR + dec + b"\x00" * RESERVE_SZ)
             else:
-                from Crypto.Cipher import AES
                 dec = AES.new(enc_key, AES.MODE_CBC, iv).decrypt(page[:PAGE_SZ - RESERVE_SZ])
                 fout.write(dec + b"\x00" * RESERVE_SZ)
     return db_path, f"ok ({pgno} pages)"
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     t0 = time.time()
     passphrase = None
-    state_file = r"D:\code\wechat-analysis\key_result.json"
+    state_file = config.KEY_RESULT_FILE
 
     if os.path.exists(state_file):
-        passphrase = json.load(open(state_file))["passphrase_hex"]
+        with open(state_file, encoding="utf-8") as f:
+            passphrase = json.load(f)["passphrase_hex"]
         log(f"[resume] 使用已保存的 passphrase")
     else:
         internal_cands = extract_dll_keys()
@@ -145,12 +154,14 @@ def main():
         if not passphrase:
             log("[-] 未能提取密钥")
             sys.exit(1)
-        json.dump({"passphrase_hex": passphrase}, open(state_file, "w"))
+        with open(state_file, "w") as f:
+            json.dump({"passphrase_hex": passphrase}, f)
 
-    log(f"[+] passphrase = {passphrase[:16]}...")
+    # 密钥材料不打印到日志
 
     # 验证 probe
-    probe = open(PROBE_DB, "rb").read(PAGE_SZ)
+    with open(PROBE_DB, "rb") as f:
+        probe = f.read(PAGE_SZ)
     _, ok = derive_and_verify(passphrase, probe)
     log(f"[verify] contact.db 校验: {'PASS' if ok else 'FAIL'}")
     if not ok:

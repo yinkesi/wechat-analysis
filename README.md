@@ -13,6 +13,20 @@
 | `data/*_stats.json` | 排行、关键词、话题的机器可读结果 |
 | `decrypted/v4/` | 解密后的全部 23 个数据库（SQLite 可直接打开） |
 
+## 配置
+
+个人路径与群列表不入公开仓库：真实配置在 `config_local.py`（已被 `.gitignore` 忽略），`config.py` 只含占位默认值，import 时后者会被前者覆盖。
+
+首次使用：
+
+1. `cp config_local.example.py config_local.py`
+2. 编辑 `config_local.py`，填入本机值：
+   - `GROUPS`：群名 → chatroom ID 映射（插入顺序即报告展示顺序）
+   - `DLL_PATH` / `WX_DB_DIR`：本机微信 Weixin.dll 与 db_storage 目录（路径含个人 wxid）
+   - `WDA_DIR` / `WX2BASE_DIR`：WeChatDataAnalysis 与 wx2base 两个外部仓库的本地路径
+   - 字体路径、每群话题数等可选项
+3. 不建 `config_local.py` 也能 `import`，但运行流水线需要其中的真实路径与群列表。
+
 ## 流水线（可复跑）
 
 ```

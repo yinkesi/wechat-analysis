@@ -1,8 +1,8 @@
-pycryptodome
-pefile
-pymem
-yara-python
-zstandard
-jieba
-matplotlib
-scikit-learn
+pycryptodome  # getkey.py: PBKDF2 派生 + AES-CBC 逐页解密
+pefile        # WeChatDataAnalysis/scan.py（DLL 特征码扫描）的依赖
+pymem         # WeChatDataAnalysis/key_v4.py（微信进程内存读取）的依赖
+yara-python   # WeChatDataAnalysis/key_v4.py（内存 YARA 扫描）的依赖
+zstandard     # extract_groups.py: 解压消息内容
+jieba         # analyze.py: 中文分词
+matplotlib    # analyze.py: 发言条数饼图
+scikit-learn  # analyze.py: TF-IDF / LDA 话题模型

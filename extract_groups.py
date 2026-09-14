@@ -1,17 +1,20 @@
-"""导出群聊 up / 2537 的全部消息为 CSV（含发言人解析、群名片、zstd 解压）"""
-import sqlite3, hashlib, json, struct, csv, sys, io
+"""导出群聊（见 config_local.GROUPS）的全部消息为 CSV（含发言人解析、群名片、zstd 解压）"""
+import csv
+import datetime
+import hashlib
+import io
+import logging
+import os
+import re
+import sqlite3
+
 import zstandard
 
-BASE = r"D:\code\wechat-analysis\decrypted\v4"
-MSG_DBS = [BASE + r"\message\message_0.db", BASE + r"\message\message_1.db"]
-CONTACT_DB = BASE + r"\contact\contact.db"
-GROUPS = {
-    "up": "44284947136@chatroom",
-    "2537": "48034203296@chatroom",
-    "DDBg": "43479440460@chatroom",
-    "苟富贵毋相忘": "43446554031@chatroom",
-    "机机交流群": "43077658458@chatroom",
-}
+from config import DATA_DIR, DECRYPTED_DIR, GROUPS
+
+MSG_DBS = [os.path.join(DECRYPTED_DIR, "message", "message_0.db"),
+           os.path.join(DECRYPTED_DIR, "message", "message_1.db")]
+CONTACT_DB = os.path.join(DECRYPTED_DIR, "contact", "contact.db")
 
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 dctx = zstandard.ZstdDecompressor()
@@ -69,7 +72,6 @@ BAD_NICK_KEYWORDS = ("微信红包", "拍了拍", "加入群聊", "邀请你", "
 
 
 def looks_like_username(s):
-    import re
     return bool(re.match(r"^(wxid_[A-Za-z0-9_-]+|[A-Za-z][A-Za-z0-9_-]{5,40}|gh_[A-Za-z0-9_-]+|.*@chatroom)$", s))
 
 
@@ -100,7 +102,8 @@ def group_nicknames(chatroom):
         for _, chunk in iter_fields(ext):
             try:
                 fields = list(iter_fields(chunk))
-            except Exception:
+            except Exception as e:
+                logging.warning("群 %s: ext_buffer 成员块 protobuf 解析失败，跳过该块: %s: %r", chatroom, type(e).__name__, e)
                 continue
             user, nick = None, None
             for fno, val in fields:
@@ -109,17 +112,18 @@ def group_nicknames(chatroom):
                         u = val.decode("utf-8")
                         if looks_like_username(u):
                             user = u
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logging.warning("群 %s: ext_buffer 字段1(成员username) 解码失败: %s: %r", chatroom, type(e).__name__, e)
                 elif fno == 2 and nick is None:
                     try:
                         nick = val.decode("utf-8")
-                    except Exception:
+                    except Exception as e:
+                        logging.warning("群 %s: ext_buffer 字段2(群名片) 解码失败: %s: %r", chatroom, type(e).__name__, e)
                         nick = None
             if user and sane_nick(nick):
                 out[user] = nick
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("群 %s: ext_buffer 整体解析失败，群名片可能不完整: %s: %r", chatroom, type(e).__name__, e)
     return out
 
 
@@ -138,41 +142,46 @@ def name2id_map(db):
     return m
 
 
-for gname, room in GROUPS.items():
-    table = "Msg_" + hashlib.md5(room.encode()).hexdigest()
-    nicks = group_nicknames(room)
-    names = contact_names()
-    rows = {}
-    for db in MSG_DBS:
-        con = sqlite3.connect(db)
-        n2i = name2id_map(db)
-        tabs = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if table not in tabs:
-            con.close(); continue
-        q = con.execute(f'SELECT server_id, real_sender_id, create_time, local_type, message_content FROM "{table}"')
-        for server_id, sid, ts, ltype, content in q:
-            if server_id in rows:
-                continue
-            rows[server_id] = (sid, ts, ltype, decode_content(content), n2i)
-        con.close()
-    # 输出
-    out_rows = []
-    for server_id, (sid, ts, ltype, content, n2i) in rows.items():
-        wxid = n2i.get(sid, f"#{sid}")
-        disp = nicks.get(wxid) or names.get(wxid) or wxid
-        out_rows.append((int(ts), wxid, disp, int(ltype), content))
-    out_rows.sort(key=lambda r: r[0])
-    path = rf"D:\code\wechat-analysis\data\{gname}.csv"
-    with open(path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["time", "wxid", "display_name", "type", "content"])
+def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(message)s")
+    for gname, room in GROUPS.items():
+        table = "Msg_" + hashlib.md5(room.encode()).hexdigest()
+        nicks = group_nicknames(room)
+        names = contact_names()
+        rows = {}
+        for db in MSG_DBS:
+            con = sqlite3.connect(db)
+            n2i = name2id_map(db)
+            tabs = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if table not in tabs:
+                con.close(); continue
+            q = con.execute(f'SELECT server_id, real_sender_id, create_time, local_type, message_content FROM "{table}"')
+            for server_id, sid, ts, ltype, content in q:
+                if server_id in rows:
+                    continue
+                rows[server_id] = (sid, ts, ltype, decode_content(content), n2i)
+            con.close()
+        # 输出
+        out_rows = []
+        for server_id, (sid, ts, ltype, content, n2i) in rows.items():
+            wxid = n2i.get(sid, f"#{sid}")
+            disp = nicks.get(wxid) or names.get(wxid) or wxid
+            out_rows.append((int(ts), wxid, disp, int(ltype), content))
+        out_rows.sort(key=lambda r: r[0])
+        path = os.path.join(DATA_DIR, f"{gname}.csv")
+        with open(path, "w", encoding="utf-8-sig", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["time", "wxid", "display_name", "type", "content"])
+            for ts, wxid, disp, ltype, content in out_rows:
+                w.writerow([datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
+                            wxid, disp, ltype, content.replace("\n", "␤")[:2000]])
+        print(f"{gname}: {len(out_rows)} 条消息 -> {path}")
+        senders = {}
         for ts, wxid, disp, ltype, content in out_rows:
-            import datetime
-            w.writerow([datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S"),
-                        wxid, disp, ltype, content.replace("\n", "␤")[:2000]])
-    print(f"{gname}: {len(out_rows)} 条消息 -> {path}")
-    senders = {}
-    for ts, wxid, disp, ltype, content in out_rows:
-        senders[disp] = senders.get(disp, 0) + 1
-    top = sorted(senders.items(), key=lambda x: -x[1])[:12]
-    print("  发言 Top12:", ", ".join(f"{d}:{c}" for d, c in top))
+            senders[disp] = senders.get(disp, 0) + 1
+        top = sorted(senders.items(), key=lambda x: -x[1])[:12]
+        print("  发言 Top12:", ", ".join(f"{d}:{c}" for d, c in top))
+
+
+if __name__ == "__main__":
+    main()

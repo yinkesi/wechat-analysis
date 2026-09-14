@@ -15,3 +15,4 @@ data/
 keys/
 key_result.json
 *.html
+config_local.py
